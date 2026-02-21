@@ -33,6 +33,7 @@ use visualizers::{
     particles::{HorizontalParticles, MixedParticles, VerticalParticles},
     radial::RadialVisualizer,
     waveform::WaveformVisualizer,
+    waves::{LissajousEnhanced, LissajousInterference, ResonantHelix, SpectralRibbons},
     BeatInfo, Visualizer,
 };
 
@@ -243,6 +244,10 @@ fn main() -> Result<()> {
         Box::new(HorizontalParticles::new()),
         Box::new(MixedParticles::new()),
         Box::new(LiquidWorld::new()),
+        Box::new(SpectralRibbons::new()),
+        Box::new(ResonantHelix::new()),
+        Box::new(LissajousInterference::new()),
+        Box::new(LissajousEnhanced::new()),
     ];
     let mut current_visualizer_index = 0;
     let mut show_info_panel = true;
@@ -271,9 +276,13 @@ fn main() -> Result<()> {
                     match key.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('i') => show_info_panel = !show_info_panel,
-                        KeyCode::Tab | KeyCode::Char('n') => {
+                        KeyCode::Tab | KeyCode::Right => {
                             current_visualizer_index =
                                 (current_visualizer_index + 1) % visualizers.len();
+                        }
+                        KeyCode::BackTab | KeyCode::Left => {
+                            current_visualizer_index =
+                                (current_visualizer_index + visualizers.len() - 1) % visualizers.len();
                         }
                         _ => {}
                     }
@@ -341,7 +350,7 @@ fn main() -> Result<()> {
                     }
 
                     let info_text = format!(
-                        " Peak Freq: {:>5} Hz | Est. BPM: {:>5.1} | Beats: {:>4} | Controls: [q]uit, [tab] style, [i]nfo",
+                        " Peak Freq: {:>5} Hz | Est. BPM: {:>5.1} | Beats: {:>4} | Controls: [q]uit, [right/tab] next, [left/shift-tab] prev, [i]nfo",
                         displayed_peak_freq, beat_info.bpm, beat_info.total_beats
                     );
 
