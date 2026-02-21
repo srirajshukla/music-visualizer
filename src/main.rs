@@ -11,7 +11,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{
         canvas::{Canvas, Line},
-        BarChart, Block, Borders, Paragraph,
+        Block, Borders, Paragraph,
     },
     Frame, Terminal,
 };
@@ -153,10 +153,18 @@ impl Visualizer for WaveformVisualizer {
     }
 }
 
-struct BarVisualizer;
+struct BarVisualizer {
+    peaks: Mutex<Vec<f32>>,
+}
 
 impl BarVisualizer {
-    fn get_log_bars(&self, spectrum: &FrequencySpectrum, num_bars: usize) -> Vec<u64> {
+    fn new() -> Self {
+        Self {
+            peaks: Mutex::new(vec![0.0; 40]),
+        }
+    }
+
+    fn get_log_bars(&self, spectrum: &FrequencySpectrum, num_bars: usize) -> Vec<f32> {
         let mut bins = vec![0.0f32; num_bars];
         let mut counts = vec![0; num_bars];
 
@@ -181,12 +189,11 @@ impl BarVisualizer {
         bins.iter()
             .enumerate()
             .map(|(i, &v)| {
-                let avg = if counts[i] > 0 {
+                if counts[i] > 0 {
                     v / counts[i] as f32
                 } else {
                     0.0
-                };
-                (avg * 1500.0) as u64
+                }
             })
             .collect()
     }
@@ -194,32 +201,82 @@ impl BarVisualizer {
 
 impl Visualizer for BarVisualizer {
     fn name(&self) -> &str {
-        "Frequency Bars"
+        "Enhanced Bars"
     }
 
     fn draw(&self, f: &mut Frame, area: Rect, spectrum: &FrequencySpectrum, beat_info: &BeatInfo) {
-        let color = if beat_info.is_beat {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        let bar_heights = self.get_log_bars(spectrum, 24);
+        let num_bars = 40;
+        let heights = self.get_log_bars(spectrum, num_bars);
+        let mut peaks = self.peaks.lock().unwrap();
 
-        let bars: Vec<(&str, u64)> = bar_heights.iter().map(|&h| ("", h)).collect();
+        // Update peaks with decay
+        for i in 0..num_bars {
+            let h = heights[i] * 300.0; // Scale for canvas
+            if h > peaks[i] {
+                peaks[i] = h;
+            } else {
+                peaks[i] = (peaks[i] - 0.5).max(0.0); // Decay
+            }
+        }
 
-        let barchart = BarChart::default()
+        let canvas = Canvas::default()
             .block(
                 Block::default()
                     .title(format!(" Style: {} ", self.name()))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(color)),
+                    .border_style(Style::default().fg(if beat_info.is_beat {
+                        Color::Yellow
+                    } else {
+                        Color::Green
+                    })),
             )
-            .data(&bars)
-            .bar_width(area.width / 24)
-            .bar_style(Style::default().fg(color))
-            .value_style(Style::default().fg(Color::Black).bg(color));
+            .x_bounds([0.0, num_bars as f64])
+            .y_bounds([0.0, 50.0])
+            .paint(|ctx| {
+                let mid_y = 25.0;
+                for i in 0..num_bars {
+                    let h = (heights[i] * 300.0) as f64;
+                    let x = i as f64 + 0.5;
+                    
+                    // Dynamic color based on frequency (left to right)
+                    let hue = i as f32 / num_bars as f32;
+                    let color = if hue < 0.33 {
+                        Color::Blue
+                    } else if hue < 0.66 {
+                        Color::Cyan
+                    } else {
+                        Color::White
+                    };
 
-        f.render_widget(barchart, area);
+                    // Draw mirrored bar
+                    ctx.draw(&Line {
+                        x1: x,
+                        y1: mid_y - h,
+                        x2: x,
+                        y2: mid_y + h,
+                        color,
+                    });
+
+                    // Draw falling peaks
+                    let peak_y = peaks[i] as f64;
+                    ctx.draw(&Line {
+                        x1: x - 0.2,
+                        y1: mid_y + peak_y + 1.0,
+                        x2: x + 0.2,
+                        y2: mid_y + peak_y + 1.0,
+                        color: Color::Red,
+                    });
+                    ctx.draw(&Line {
+                        x1: x - 0.2,
+                        y1: mid_y - peak_y - 1.0,
+                        x2: x + 0.2,
+                        y2: mid_y - peak_y - 1.0,
+                        color: Color::Red,
+                    });
+                }
+            });
+
+        f.render_widget(canvas, area);
     }
 }
 
@@ -367,7 +424,7 @@ fn main() -> Result<()> {
 
     // Visualizers setup
     let visualizers: Vec<Box<dyn Visualizer>> =
-        vec![Box::new(WaveformVisualizer), Box::new(BarVisualizer)];
+        vec![Box::new(WaveformVisualizer), Box::new(BarVisualizer::new())];
     let mut current_visualizer_index = 0;
     let mut show_info_panel = true;
 
