@@ -1,0 +1,13 @@
+[package]
+name = "music_visualizer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+cpal = "0.17.3"
+crossterm = "0.29.0"
+num-complex = "0.4.6"
+ratatui = "0.30.0"
+rustfft = "6.4.1"
+spectrum-analyzer = "1.7.0"
