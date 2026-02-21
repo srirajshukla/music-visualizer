@@ -25,8 +25,8 @@ use std::{
 
 mod visualizers;
 use visualizers::{
-    bars::BarVisualizer, particles::ParticleVisualizer, radial::RadialVisualizer,
-    waveform::WaveformVisualizer, BeatInfo, Visualizer,
+    bars::BarVisualizer, liquid::LiquidVisualizer, particles::ParticleVisualizer,
+    radial::RadialVisualizer, waveform::WaveformVisualizer, BeatInfo, Visualizer,
 };
 
 // --- Beat Detector ---
@@ -176,6 +176,7 @@ fn main() -> Result<()> {
         Box::new(BarVisualizer::new()),
         Box::new(RadialVisualizer),
         Box::new(ParticleVisualizer),
+        Box::new(LiquidVisualizer),
     ];
     let mut current_visualizer_index = 0;
     let mut show_info_panel = true;

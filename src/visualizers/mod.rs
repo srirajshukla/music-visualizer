@@ -5,6 +5,7 @@ pub mod waveform;
 pub mod bars;
 pub mod radial;
 pub mod particles;
+pub mod liquid;
 
 pub struct BeatInfo {
     pub is_beat: bool,
