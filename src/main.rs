@@ -26,7 +26,7 @@ use std::{
 mod visualizers;
 use visualizers::{
     bars::BarVisualizer,
-    liquid::LiquidVisualizer,
+    liquid::LiquidWorld,
     particles::{HorizontalParticles, MixedParticles, VerticalParticles},
     radial::RadialVisualizer,
     waveform::WaveformVisualizer,
@@ -182,7 +182,7 @@ fn main() -> Result<()> {
         Box::new(VerticalParticles::new()),
         Box::new(HorizontalParticles::new()),
         Box::new(MixedParticles::new()),
-        Box::new(LiquidVisualizer),
+        Box::new(LiquidWorld::new()),
     ];
     let mut current_visualizer_index = 0;
     let mut show_info_panel = true;
