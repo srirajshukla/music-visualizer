@@ -174,7 +174,7 @@ fn main() -> Result<()> {
     let visualizers: Vec<Box<dyn Visualizer>> = vec![
         Box::new(WaveformVisualizer),
         Box::new(BarVisualizer::new()),
-        Box::new(RadialVisualizer),
+        Box::new(RadialVisualizer::new()),
         Box::new(ParticleVisualizer),
         Box::new(LiquidVisualizer),
     ];
