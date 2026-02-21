@@ -175,7 +175,7 @@ fn main() -> Result<()> {
         Box::new(WaveformVisualizer),
         Box::new(BarVisualizer::new()),
         Box::new(RadialVisualizer::new()),
-        Box::new(ParticleVisualizer),
+        Box::new(ParticleVisualizer::new()),
         Box::new(LiquidVisualizer),
     ];
     let mut current_visualizer_index = 0;
