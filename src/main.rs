@@ -368,6 +368,36 @@ fn main() -> Result<()> {
 
                     f.render_widget(info_panel, layout[1]);
                 }
+            } else {
+                // Waiting for Audio screen
+                let time_val = Instant::now().duration_since(last_info_update).as_millis() / 500;
+                let notes = match time_val % 5 {
+                    0 => "      ♪      ",
+                    1 => "    ♪  ♫     ",
+                    2 => "   ♪  ♫  ♬   ",
+                    3 => "  ♪  ♫  ♬  ♩  ",
+                    _ => " ♪  ♫  ♬  ♩  ♭ ",
+                };
+                
+                let waiting_msg = Paragraph::new(vec![
+                    ratatui::text::Line::from(""),
+                    ratatui::text::Line::from(""),
+                    ratatui::text::Line::from("Waiting for Audio").style(Style::default().fg(Color::Cyan)),
+                    ratatui::text::Line::from(""),
+                    ratatui::text::Line::from(notes).style(Style::default().fg(Color::Cyan)),
+                ])
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(Block::default().borders(Borders::ALL).title(" Initializing "));
+                
+                f.render_widget(waiting_msg, layout[0]);
+
+                if show_info_panel {
+                    let info_text = " Status: Ready | Listening for sound source... | Controls: [q]uit, [i]nfo";
+                    let info_panel = Paragraph::new(info_text)
+                        .block(Block::default().borders(Borders::ALL).title(" Audio Intelligence "))
+                        .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(info_panel, layout[1]);
+                }
             }
         })?;
     }
