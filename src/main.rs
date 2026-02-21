@@ -19,7 +19,10 @@ use spectrum_analyzer::{
 use std::{
     collections::VecDeque,
     io,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -133,19 +136,19 @@ fn get_peak_frequency(spectrum: &FrequencySpectrum) -> (u32, f32) {
     (peak_freq, max_val)
 }
 
-fn main() -> Result<()> {
-    // 1. Setup Audio Capture
+fn setup_audio_stream(
+    samples: Arc<Mutex<Vec<f32>>>,
+    restart_flag: Arc<AtomicBool>,
+) -> Result<(cpal::Stream, cpal::StreamConfig)> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .expect("No output device found");
-
-    println!("Capturing audio from: {}", device.description()?);
+        .ok_or_else(|| anyhow::anyhow!("No output device found"))?;
 
     let config: cpal::StreamConfig = device.default_output_config()?.into();
 
-    let samples = Arc::new(Mutex::new(Vec::new()));
     let samples_clone = samples.clone();
+    let restart_flag_clone = restart_flag.clone();
 
     let stream = device.build_input_stream(
         &config,
@@ -157,11 +160,32 @@ fn main() -> Result<()> {
                 s.drain(0..keep);
             }
         },
-        |err| eprintln!("Stream error: {}", err),
+        move |_err| {
+            restart_flag_clone.store(true, Ordering::SeqCst);
+        },
         None,
     )?;
 
     stream.play()?;
+    Ok((stream, config))
+}
+
+fn main() -> Result<()> {
+    // 1. Setup Audio Capture
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let restart_flag = Arc::new(AtomicBool::new(false));
+
+    let (mut _stream, mut config) = match setup_audio_stream(samples.clone(), restart_flag.clone()) {
+        Ok(res) => (Some(res.0), res.1),
+        Err(_) => (
+            None,
+            cpal::StreamConfig {
+                channels: 1,
+                sample_rate: 44100,
+                buffer_size: cpal::BufferSize::Default,
+            },
+        ),
+    };
 
     // 2. Setup Terminal UI
     enable_raw_mode()?;
@@ -189,6 +213,19 @@ fn main() -> Result<()> {
 
     // 3. Main Render Loop
     loop {
+        if _stream.is_none() || restart_flag.load(Ordering::SeqCst) {
+            if let Ok((new_stream, new_config)) =
+                setup_audio_stream(samples.clone(), restart_flag.clone())
+            {
+                _stream = Some(new_stream);
+                config = new_config;
+                restart_flag.store(false, Ordering::SeqCst);
+                // Clear old samples
+                let mut s = samples.lock().unwrap();
+                s.clear();
+            }
+        }
+
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
