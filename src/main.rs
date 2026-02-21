@@ -36,6 +36,38 @@ trait Visualizer {
 
 struct WaveformVisualizer;
 
+impl WaveformVisualizer {
+    fn get_log_points(&self, spectrum: &FrequencySpectrum, num_bins: usize) -> Vec<f32> {
+        let mut bins = vec![0.0f32; num_bins];
+        let mut counts = vec![0; num_bins];
+        
+        let min_log = 20.0f32.ln();
+        let max_log = 20000.0f32.ln();
+        let log_range = max_log - min_log;
+
+        for (freq, val) in spectrum.to_map().iter() {
+            let f = *freq as f32;
+            if f < 20.0 || f > 20000.0 { continue; }
+            
+            // Map frequency to a logarithmic bin index
+            let log_f = f.ln();
+            let bin_idx = (((log_f - min_log) / log_range) * num_bins as f32) as usize;
+            let bin_idx = bin_idx.min(num_bins - 1);
+            
+            bins[bin_idx] += val;
+            counts[bin_idx] += 1;
+        }
+
+        // Average and scale
+        for i in 0..num_bins {
+            if counts[i] > 0 {
+                bins[i] /= counts[i] as f32;
+            }
+        }
+        bins
+    }
+}
+
 impl Visualizer for WaveformVisualizer {
     fn name(&self) -> &str {
         "Mirrored Waveform"
@@ -43,15 +75,15 @@ impl Visualizer for WaveformVisualizer {
 
     fn draw(&self, f: &mut Frame, area: Rect, spectrum: &FrequencySpectrum, is_beat: bool) {
         let color = if is_beat { Color::Magenta } else { Color::Cyan };
-        let raw_data = spectrum.to_map();
+        let bins = self.get_log_points(spectrum, 60);
+        
         let mut top_points: Vec<(f64, f64)> = Vec::new();
         let mut bottom_points: Vec<(f64, f64)> = Vec::new();
 
         let mid_y = 25.0;
-        let step = raw_data.len() / 60;
-        for (i, (_freq, val)) in raw_data.iter().step_by(step.max(1)).enumerate() {
+        for (i, val) in bins.iter().enumerate() {
             let x = i as f64;
-            let height = (*val * 150.0) as f64;
+            let height = (*val * 200.0) as f64; // Adjusted scale for log bins
             top_points.push((x, mid_y + height));
             bottom_points.push((x, mid_y - height));
         }
@@ -63,7 +95,7 @@ impl Visualizer for WaveformVisualizer {
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(color)),
             )
-            .x_bounds([0.0, top_points.len() as f64])
+            .x_bounds([0.0, bins.len() as f64])
             .y_bounds([0.0, 50.0])
             .paint(|ctx| {
                 for i in 0..top_points.len().saturating_sub(1) {
@@ -90,6 +122,34 @@ impl Visualizer for WaveformVisualizer {
 
 struct BarVisualizer;
 
+impl BarVisualizer {
+    fn get_log_bars(&self, spectrum: &FrequencySpectrum, num_bars: usize) -> Vec<u64> {
+        let mut bins = vec![0.0f32; num_bars];
+        let mut counts = vec![0; num_bars];
+        
+        let min_log = 20.0f32.ln();
+        let max_log = 20000.0f32.ln();
+        let log_range = max_log - min_log;
+
+        for (freq, val) in spectrum.to_map().iter() {
+            let f = *freq as f32;
+            if f < 20.0 || f > 20000.0 { continue; }
+            
+            let log_f = f.ln();
+            let bin_idx = (((log_f - min_log) / log_range) * num_bars as f32) as usize;
+            let bin_idx = bin_idx.min(num_bars - 1);
+            
+            bins[bin_idx] += val;
+            counts[bin_idx] += 1;
+        }
+
+        bins.iter().enumerate().map(|(i, &v)| {
+            let avg = if counts[i] > 0 { v / counts[i] as f32 } else { 0.0 };
+            (avg * 1500.0) as u64
+        }).collect()
+    }
+}
+
 impl Visualizer for BarVisualizer {
     fn name(&self) -> &str {
         "Frequency Bars"
@@ -97,15 +157,9 @@ impl Visualizer for BarVisualizer {
 
     fn draw(&self, f: &mut Frame, area: Rect, spectrum: &FrequencySpectrum, is_beat: bool) {
         let color = if is_beat { Color::Yellow } else { Color::Green };
-        let raw_data = spectrum.to_map();
-        let mut bars: Vec<(&str, u64)> = Vec::new();
-
-        // Take a subset of frequencies for the bar chart
-        let step = raw_data.len() / 20;
-        for (_freq, val) in raw_data.iter().step_by(step.max(1)).take(20) {
-            let height = (*val * 1000.0) as u64;
-            bars.push(("", height));
-        }
+        let bar_heights = self.get_log_bars(spectrum, 24);
+        
+        let bars: Vec<(&str, u64)> = bar_heights.iter().map(|&h| ("", h)).collect();
 
         let barchart = BarChart::default()
             .block(
@@ -115,7 +169,7 @@ impl Visualizer for BarVisualizer {
                     .border_style(Style::default().fg(color)),
             )
             .data(&bars)
-            .bar_width(3)
+            .bar_width(area.width / 24)
             .bar_style(Style::default().fg(color))
             .value_style(Style::default().fg(Color::Black).bg(color));
 
