@@ -1,28 +1,129 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{
         canvas::{Canvas, Line},
-        Block, Borders,
+        BarChart, Block, Borders,
     },
-    Terminal,
+    Frame, Terminal,
 };
 use spectrum_analyzer::{
     scaling::divide_by_N, samples_fft_to_spectrum, windows::hann_window, FrequencyLimit,
+    FrequencySpectrum,
 };
 use std::{
     io,
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+// --- Visualizer Trait ---
+
+trait Visualizer {
+    fn name(&self) -> &str;
+    fn draw(&self, f: &mut Frame, area: Rect, spectrum: &FrequencySpectrum, is_beat: bool);
+}
+
+// --- Visualizer Implementations ---
+
+struct WaveformVisualizer;
+
+impl Visualizer for WaveformVisualizer {
+    fn name(&self) -> &str {
+        "Mirrored Waveform"
+    }
+
+    fn draw(&self, f: &mut Frame, area: Rect, spectrum: &FrequencySpectrum, is_beat: bool) {
+        let color = if is_beat { Color::Magenta } else { Color::Cyan };
+        let raw_data = spectrum.to_map();
+        let mut top_points: Vec<(f64, f64)> = Vec::new();
+        let mut bottom_points: Vec<(f64, f64)> = Vec::new();
+
+        let mid_y = 25.0;
+        let step = raw_data.len() / 60;
+        for (i, (_freq, val)) in raw_data.iter().step_by(step.max(1)).enumerate() {
+            let x = i as f64;
+            let height = (*val * 150.0) as f64;
+            top_points.push((x, mid_y + height));
+            bottom_points.push((x, mid_y - height));
+        }
+
+        let canvas = Canvas::default()
+            .block(
+                Block::default()
+                    .title(format!(" Style: {} ", self.name()))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color)),
+            )
+            .x_bounds([0.0, top_points.len() as f64])
+            .y_bounds([0.0, 50.0])
+            .paint(|ctx| {
+                for i in 0..top_points.len().saturating_sub(1) {
+                    let (x1, y1) = top_points[i];
+                    let (x2, y2) = top_points[i + 1];
+                    ctx.draw(&Line { x1, y1, x2, y2, color });
+
+                    let (x1b, y1b) = bottom_points[i];
+                    let (x2b, y2b) = bottom_points[i + 1];
+                    ctx.draw(&Line { x1: x1b, y1: y1b, x2: x2b, y2: y2b, color });
+
+                    if i % 2 == 0 {
+                        ctx.draw(&Line { x1, y1, x2: x1b, y2: y1b, color: Color::DarkGray });
+                    }
+                }
+                if is_beat {
+                    ctx.print(0.0, 45.0, ">>> BEAT <<<");
+                }
+            });
+
+        f.render_widget(canvas, area);
+    }
+}
+
+struct BarVisualizer;
+
+impl Visualizer for BarVisualizer {
+    fn name(&self) -> &str {
+        "Frequency Bars"
+    }
+
+    fn draw(&self, f: &mut Frame, area: Rect, spectrum: &FrequencySpectrum, is_beat: bool) {
+        let color = if is_beat { Color::Yellow } else { Color::Green };
+        let raw_data = spectrum.to_map();
+        let mut bars: Vec<(&str, u64)> = Vec::new();
+
+        // Take a subset of frequencies for the bar chart
+        let step = raw_data.len() / 20;
+        for (_freq, val) in raw_data.iter().step_by(step.max(1)).take(20) {
+            let height = (*val * 1000.0) as u64;
+            bars.push(("", height));
+        }
+
+        let barchart = BarChart::default()
+            .block(
+                Block::default()
+                    .title(format!(" Style: {} ", self.name()))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color)),
+            )
+            .data(&bars)
+            .bar_width(3)
+            .bar_style(Style::default().fg(color))
+            .value_style(Style::default().fg(Color::Black).bg(color));
+
+        f.render_widget(barchart, area);
+    }
+}
+
+// --- Beat Detector ---
 
 struct BeatDetector {
     energy_history: Vec<f32>,
@@ -39,8 +140,7 @@ impl BeatDetector {
         }
     }
 
-    fn detect(&mut self, spectrum_data: &spectrum_analyzer::FrequencySpectrum) -> bool {
-        // Focus on low frequencies for beat detection (e.g., 20Hz - 150Hz)
+    fn detect(&mut self, spectrum_data: &FrequencySpectrum) -> bool {
         let mut low_energy = 0.0;
         let mut count = 0;
         for (freq, val) in spectrum_data.to_map().iter() {
@@ -71,7 +171,6 @@ impl BeatDetector {
             self.energy_history.remove(0);
         }
 
-        // Detect beat if current low energy is significantly higher than average
         avg_low_energy > self.sensitivity * history_avg && avg_low_energy > 0.01
     }
 }
@@ -87,7 +186,6 @@ fn main() -> Result<()> {
 
     let config: cpal::StreamConfig = device.default_output_config()?.into();
 
-    // Shared buffer to send samples from Audio Thread -> UI Thread
     let samples = Arc::new(Mutex::new(Vec::new()));
     let samples_clone = samples.clone();
 
@@ -114,22 +212,32 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut beat_detector = BeatDetector::new(43, 1.5); // ~1 second history at 60fps
+    let mut beat_detector = BeatDetector::new(43, 1.5);
     let mut is_beat = false;
     let mut beat_timer = 0;
 
+    // Visualizers setup
+    let visualizers: Vec<Box<dyn Visualizer>> =
+        vec![Box::new(WaveformVisualizer), Box::new(BarVisualizer)];
+    let mut current_visualizer_index = 0;
+
     // 3. Main Render Loop
     loop {
-        // Handle Input
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Tab | KeyCode::Char('n') => {
+                            current_visualizer_index =
+                                (current_visualizer_index + 1) % visualizers.len();
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
 
-        // Process Audio Data
         let spectrum_data = {
             let s = samples.lock().unwrap();
             if s.len() >= 2048 {
@@ -151,7 +259,7 @@ fn main() -> Result<()> {
         if let Some(ref spectrum) = spectrum_data {
             if beat_detector.detect(spectrum) {
                 is_beat = true;
-                beat_timer = 5; // Beat effect lasts for 5 frames
+                beat_timer = 5;
             }
         }
 
@@ -161,62 +269,14 @@ fn main() -> Result<()> {
             is_beat = false;
         }
 
-        // Draw UI
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(100)].as_ref())
+                .constraints([Constraint::Min(0)].as_ref())
                 .split(f.area());
 
-            let color = if is_beat { Color::Magenta } else { Color::Cyan };
-
-            if let Some(spectrum) = spectrum_data {
-                let raw_data = spectrum.to_map();
-                let mut top_points: Vec<(f64, f64)> = Vec::new();
-                let mut bottom_points: Vec<(f64, f64)> = Vec::new();
-
-                let mid_y = 25.0;
-                let step = raw_data.len() / 60;
-                for (i, (_freq, val)) in raw_data.iter().step_by(step.max(1)).enumerate() {
-                    let x = i as f64;
-                    let height = (*val * 150.0) as f64; // Increased scale
-                    top_points.push((x, mid_y + height));
-                    bottom_points.push((x, mid_y - height));
-                }
-
-                let canvas = Canvas::default()
-                    .block(
-                        Block::default()
-                            .title("Dynamic Music Visualization")
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(color)),
-                    )
-                    .x_bounds([0.0, top_points.len() as f64])
-                    .y_bounds([0.0, 50.0])
-                    .paint(|ctx| {
-                        for i in 0..top_points.len().saturating_sub(1) {
-                            // Top curve
-                            let (x1, y1) = top_points[i];
-                            let (x2, y2) = top_points[i + 1];
-                            ctx.draw(&Line { x1, y1, x2, y2, color });
-
-                            // Bottom curve (mirror)
-                            let (x1b, y1b) = bottom_points[i];
-                            let (x2b, y2b) = bottom_points[i + 1];
-                            ctx.draw(&Line { x1: x1b, y1: y1b, x2: x2b, y2: y2b, color });
-                            
-                            // Connecting lines for a "ribbon" effect
-                            if i % 2 == 0 {
-                                ctx.draw(&Line { x1, y1, x2: x1b, y2: y1b, color: Color::DarkGray });
-                            }
-                        }
-                        
-                        if is_beat {
-                             ctx.print(0.0, 45.0, ">>> BEAT <<<");
-                        }
-                    });
-
-                f.render_widget(canvas, chunks[0]);
+            if let Some(spectrum) = &spectrum_data {
+                visualizers[current_visualizer_index].draw(f, chunks[0], spectrum, is_beat);
             }
         })?;
     }
