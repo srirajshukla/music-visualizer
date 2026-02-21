@@ -25,7 +25,8 @@ use std::{
 
 mod visualizers;
 use visualizers::{
-    bars::BarVisualizer, waveform::WaveformVisualizer, BeatInfo, Visualizer,
+    bars::BarVisualizer, radial::RadialVisualizer, waveform::WaveformVisualizer, BeatInfo,
+    Visualizer,
 };
 
 // --- Beat Detector ---
@@ -173,6 +174,7 @@ fn main() -> Result<()> {
     let visualizers: Vec<Box<dyn Visualizer>> = vec![
         Box::new(WaveformVisualizer),
         Box::new(BarVisualizer::new()),
+        Box::new(RadialVisualizer),
     ];
     let mut current_visualizer_index = 0;
     let mut show_info_panel = true;
