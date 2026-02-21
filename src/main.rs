@@ -62,11 +62,15 @@ impl BeatDetector {
     fn detect(&mut self, spectrum_data: &FrequencySpectrum) -> bool {
         let mut low_energy = 0.0;
         let mut count = 0;
+        
+        // Use a weighted average where lower frequencies (20-60Hz) are prioritized
+        // as they represent the "thump" of the kick drum more accurately.
         for (freq, val) in spectrum_data.to_map().iter() {
             let f = *freq as f32;
             let v = *val;
             if f >= 20.0 && f <= 150.0 {
-                low_energy += v;
+                let weight = if f <= 60.0 { 1.5 } else { 1.0 };
+                low_energy += v * weight;
                 count += 1;
             }
         }
@@ -82,22 +86,32 @@ impl BeatDetector {
             return false;
         }
 
+        // Calculate both average and variance for a more dynamic threshold
         let history_avg: f32 =
             self.energy_history.iter().sum::<f32>() / self.energy_history.len() as f32;
+        
+        let variance: f32 = self.energy_history.iter()
+            .map(|e| (e - history_avg).powi(2))
+            .sum::<f32>() / self.energy_history.len() as f32;
+        
+        // A "beat" is a peak that stands out significantly from the local noise floor.
+        // We use a combination of sensitivity * average and a variance-based offset.
+        let dynamic_threshold = self.sensitivity * history_avg + variance.sqrt() * 0.5;
 
         self.energy_history.push(avg_low_energy);
         if self.energy_history.len() > self.history_size {
             self.energy_history.remove(0);
         }
 
-        let is_beat = avg_low_energy > self.sensitivity * history_avg && avg_low_energy > 0.01;
+        let is_beat = avg_low_energy > dynamic_threshold && avg_low_energy > 0.01;
 
         if is_beat {
             let now = Instant::now();
             let duration = now.duration_since(self.last_beat);
+            // Limit to ~200 BPM (300ms) to avoid double triggers
             if duration.as_millis() > 300 {
                 self.intervals.push_back(duration);
-                if self.intervals.len() > 10 {
+                if self.intervals.len() > 15 {
                     self.intervals.pop_front();
                 }
                 self.last_beat = now;
@@ -109,15 +123,28 @@ impl BeatDetector {
     }
 
     fn get_bpm(&self) -> f32 {
-        if self.intervals.is_empty() {
+        if self.intervals.len() < 3 {
             return 0.0;
         }
-        let avg_ms = self.intervals.iter().map(|d| d.as_millis()).sum::<u128>() as f32
-            / self.intervals.len() as f32;
-        if avg_ms == 0.0 {
+        
+        // Use a median-like approach: sort intervals and pick the middle range 
+        // to ignore outliers (missed beats or accidental double triggers).
+        let mut sorted_intervals: Vec<u128> = self.intervals.iter()
+            .map(|d| d.as_millis())
+            .collect();
+        sorted_intervals.sort_unstable();
+        
+        let mid = sorted_intervals.len() / 2;
+        let median_ms = if sorted_intervals.len() % 2 == 0 {
+            (sorted_intervals[mid - 1] + sorted_intervals[mid]) as f32 / 2.0
+        } else {
+            sorted_intervals[mid] as f32
+        };
+
+        if median_ms == 0.0 {
             0.0
         } else {
-            60000.0 / avg_ms
+            60000.0 / median_ms
         }
     }
 }
@@ -146,6 +173,7 @@ fn setup_audio_stream(
         .ok_or_else(|| anyhow::anyhow!("No output device found"))?;
 
     let config: cpal::StreamConfig = device.default_output_config()?.into();
+    let channels = config.channels as usize;
 
     let samples_clone = samples.clone();
     let restart_flag_clone = restart_flag.clone();
@@ -154,7 +182,15 @@ fn setup_audio_stream(
         &config,
         move |data: &[f32], _: &_| {
             let mut s = samples_clone.lock().unwrap();
-            s.extend_from_slice(data);
+            if channels > 1 {
+                for frame in data.chunks_exact(channels) {
+                    let mono: f32 = frame.iter().sum::<f32>() / channels as f32;
+                    s.push(mono);
+                }
+            } else {
+                s.extend_from_slice(data);
+            }
+            
             if s.len() > 4096 {
                 let keep = s.len() - 4096;
                 s.drain(0..keep);
@@ -210,6 +246,9 @@ fn main() -> Result<()> {
     ];
     let mut current_visualizer_index = 0;
     let mut show_info_panel = true;
+
+    let mut last_info_update = Instant::now();
+    let mut displayed_peak_freq = 0;
 
     // 3. Main Render Loop
     loop {
@@ -294,11 +333,16 @@ fn main() -> Result<()> {
                 visualizers[current_visualizer_index].draw(f, layout[0], spectrum, &beat_info);
 
                 if show_info_panel {
-                    // Info Panel
-                    let (peak_freq, _peak_val) = get_peak_frequency(spectrum);
+                    // Update peak frequency only every 200ms to keep it readable
+                    if last_info_update.elapsed() >= Duration::from_millis(200) {
+                        let (peak_freq, _peak_val) = get_peak_frequency(spectrum);
+                        displayed_peak_freq = peak_freq;
+                        last_info_update = Instant::now();
+                    }
+
                     let info_text = format!(
                         " Peak Freq: {:>5} Hz | Est. BPM: {:>5.1} | Beats: {:>4} | Controls: [q]uit, [tab] style, [i]nfo",
-                        peak_freq, beat_info.bpm, beat_info.total_beats
+                        displayed_peak_freq, beat_info.bpm, beat_info.total_beats
                     );
 
                     let info_panel = Paragraph::new(info_text)
